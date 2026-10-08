@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -12,8 +12,13 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://peerlink.amit144.com"),
   title: "PeerLink",
   description: "Realtime peer-to-peer video calling",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0369a1",
 };
 
 export default function RootLayout({
