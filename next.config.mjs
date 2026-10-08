@@ -1,11 +1,11 @@
 const ContentSecurityPolicy = `
   default-src 'self';
-  script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://challenges.cloudflare.com;
+  script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://clerk.amit144.com https://challenges.cloudflare.com;
   style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob: https://img.clerk.com https://images.clerk.dev https://api.dicebear.com;
   font-src 'self' data:;
-  connect-src 'self' https://*.clerk.accounts.dev https: wss:;
-  frame-src 'self' https://*.clerk.accounts.dev https://challenges.cloudflare.com;
+  connect-src 'self' https://*.clerk.accounts.dev https://clerk.amit144.com https: wss:;
+  frame-src 'self' https://*.clerk.accounts.dev https://clerk.amit144.com https://challenges.cloudflare.com;
   media-src 'self' blob: data:;
   worker-src 'self' blob:;
   frame-ancestors 'none';
