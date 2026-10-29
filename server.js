@@ -18,6 +18,7 @@ const clerkClient = createClerkClient({
 
 const wss = new WebSocketServer({ server: httpServer, maxPayload: 5 * 1024 * 1024 });
 let rooms = new Map(); // roomId -> Map<userId, ws>
+let meetings = new Map(); // roomId -> Set<userId> currently in the group meeting
 
 const HEARTBEAT_INTERVAL_MS = 30000;
 
@@ -41,6 +42,9 @@ const MAX_MEDIA_DATA_LENGTH = 4 * 1024 * 1024;
 const MAX_EMOJI_LENGTH = 8;
 const MAX_REPLY_PREVIEW_LENGTH = 200;
 const MESSAGE_KINDS = new Set(['text', 'image', 'voice']);
+// Group meetings are a full mesh (every participant connects to every other),
+// so bandwidth/CPU grows with each person — keep it small.
+const MAX_MEETING_PARTICIPANTS = 6;
 
 function isRateLimited(ws) {
   const now = Date.now();
@@ -188,6 +192,17 @@ wss.on("connection", async function connection(ws, req) {
         case "endCall":
           handleEndCall(messageData, ws);
           break;
+        case "meetingJoin":
+          handleMeetingJoin(ws);
+          break;
+        case "meetingLeave":
+          handleMeetingLeave(ws);
+          break;
+        case "meetingOffer":
+        case "meetingAnswer":
+        case "meetingIce":
+          forwardMeetingSignal(messageData, ws);
+          break;
       }
     } catch (error) {
       console.error("Error handling WS message:", error);
@@ -197,6 +212,7 @@ wss.on("connection", async function connection(ws, req) {
   ws.on("close", function () {
     const room = rooms.get(roomId);
     if (room && room.get(userId) === ws) {
+      removeFromMeeting(roomId, userId);
       room.delete(userId);
       if (room.size === 0) {
         rooms.delete(roomId);
@@ -206,7 +222,31 @@ wss.on("connection", async function connection(ws, req) {
     }
   });
   broadcastUserList(roomId);
+  ws.send(JSON.stringify({ type: "meetingState", participants: getMeetingParticipants(roomId) }));
 });
+
+// Chat events are scoped to a channel: the whole room (default) or only the
+// people currently in the room's group meeting, so the two chats never mix.
+function broadcastChat(ws, messageData, payload) {
+  const room = rooms.get(ws.roomId);
+  if (!room) return;
+
+  if (messageData.channel === "meeting") {
+    const meeting = meetings.get(ws.roomId);
+    if (!meeting || !meeting.has(ws.userId)) return;
+    const data = JSON.stringify({ ...payload, channel: "meeting" });
+    meeting.forEach((userId) => {
+      const client = room.get(userId);
+      if (client && client !== ws && client.readyState === WebSocket.OPEN) client.send(data);
+    });
+    return;
+  }
+
+  const data = JSON.stringify(payload);
+  room.forEach((client) => {
+    if (client !== ws && client.readyState === WebSocket.OPEN) client.send(data);
+  });
+}
 
 function handleChatMessage(messageData, ws) {
   if (typeof messageData.id !== "string" || messageData.id.length === 0 || messageData.id.length > 100) {
@@ -234,25 +274,17 @@ function handleChatMessage(messageData, ws) {
 
   const replyTo = isValidReplyTo(messageData.replyTo) ? messageData.replyTo : undefined;
 
-  const room = rooms.get(ws.roomId);
-  if (!room) return;
-  room.forEach(function each(client) {
-    if (client !== ws && client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: "message",
-          id: messageData.id,
-          kind,
-          content: messageData.content,
-          mediaData: messageData.mediaData,
-          mediaMimeType: messageData.mediaMimeType,
-          durationSec: messageData.durationSec,
-          replyTo,
-          sender: ws.username,
-          senderImageUrl: ws.imageUrl,
-        })
-      );
-    }
+  broadcastChat(ws, messageData, {
+    type: "message",
+    id: messageData.id,
+    kind,
+    content: messageData.content,
+    mediaData: messageData.mediaData,
+    mediaMimeType: messageData.mediaMimeType,
+    durationSec: messageData.durationSec,
+    replyTo,
+    sender: ws.username,
+    senderImageUrl: ws.imageUrl,
   });
 }
 
@@ -272,18 +304,10 @@ function isValidReplyTo(replyTo) {
 function handleTyping(messageData, ws) {
   if (typeof messageData.isTyping !== "boolean") return;
 
-  const room = rooms.get(ws.roomId);
-  if (!room) return;
-  room.forEach(function each(client) {
-    if (client !== ws && client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: "typing",
-          sender: ws.username,
-          isTyping: messageData.isTyping,
-        })
-      );
-    }
+  broadcastChat(ws, messageData, {
+    type: "typing",
+    sender: ws.username,
+    isTyping: messageData.isTyping,
   });
 }
 
@@ -298,20 +322,12 @@ function handleReaction(messageData, ws) {
     return;
   }
 
-  const room = rooms.get(ws.roomId);
-  if (!room) return;
-  room.forEach(function each(client) {
-    if (client !== ws && client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: "reaction",
-          messageId: messageData.messageId,
-          emoji: messageData.emoji,
-          sender: ws.username,
-          remove: messageData.remove === true,
-        })
-      );
-    }
+  broadcastChat(ws, messageData, {
+    type: "reaction",
+    messageId: messageData.messageId,
+    emoji: messageData.emoji,
+    sender: ws.username,
+    remove: messageData.remove === true,
   });
 }
 
@@ -326,19 +342,11 @@ function handleEditMessage(messageData, ws) {
     return;
   }
 
-  const room = rooms.get(ws.roomId);
-  if (!room) return;
-  room.forEach(function each(client) {
-    if (client !== ws && client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: "edit",
-          messageId: messageData.messageId,
-          content: messageData.content,
-          sender: ws.username,
-        })
-      );
-    }
+  broadcastChat(ws, messageData, {
+    type: "edit",
+    messageId: messageData.messageId,
+    content: messageData.content,
+    sender: ws.username,
   });
 }
 
@@ -347,18 +355,10 @@ function handleDeleteMessage(messageData, ws) {
     return;
   }
 
-  const room = rooms.get(ws.roomId);
-  if (!room) return;
-  room.forEach(function each(client) {
-    if (client !== ws && client.readyState === WebSocket.OPEN) {
-      client.send(
-        JSON.stringify({
-          type: "delete",
-          messageId: messageData.messageId,
-          sender: ws.username,
-        })
-      );
-    }
+  broadcastChat(ws, messageData, {
+    type: "delete",
+    messageId: messageData.messageId,
+    sender: ws.username,
   });
 }
 
@@ -412,4 +412,60 @@ function broadcastUserList(roomId) {
       );
     }
   });
+}
+
+function getMeetingParticipants(roomId) {
+  return Array.from(meetings.get(roomId) ?? []);
+}
+
+function broadcastMeetingState(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const payload = JSON.stringify({ type: "meetingState", participants: getMeetingParticipants(roomId) });
+  room.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(payload);
+  });
+}
+
+function removeFromMeeting(roomId, userId) {
+  const meeting = meetings.get(roomId);
+  if (!meeting || !meeting.delete(userId)) return;
+  if (meeting.size === 0) meetings.delete(roomId);
+  broadcastMeetingState(roomId);
+}
+
+// The joiner receives the current participant list and sends an offer to
+// each of them; existing participants only ever answer. Having exactly one
+// side initiate per pair avoids both peers offering at once.
+function handleMeetingJoin(ws) {
+  let meeting = meetings.get(ws.roomId);
+  if (!meeting) {
+    meeting = new Set();
+    meetings.set(ws.roomId, meeting);
+  }
+  // A user already listed (e.g. a second tab, or a rejoin before the old
+  // socket closed) is let back in and reconnects to everyone else.
+  if (!meeting.has(ws.userId) && meeting.size >= MAX_MEETING_PARTICIPANTS) {
+    ws.send(JSON.stringify({ type: "meetingFull" }));
+    return;
+  }
+
+  const existing = Array.from(meeting).filter((id) => id !== ws.userId);
+  meeting.add(ws.userId);
+  ws.send(JSON.stringify({ type: "meetingJoined", participants: existing }));
+  broadcastMeetingState(ws.roomId);
+}
+
+function handleMeetingLeave(ws) {
+  removeFromMeeting(ws.roomId, ws.userId);
+}
+
+function forwardMeetingSignal(messageData, ws) {
+  const meeting = meetings.get(ws.roomId);
+  // Only relay between two people who are both in this room's meeting.
+  if (!meeting || !meeting.has(ws.userId) || !meeting.has(messageData.to)) return;
+  const target = rooms.get(ws.roomId)?.get(messageData.to);
+  if (target && target.readyState === WebSocket.OPEN) {
+    target.send(JSON.stringify({ ...messageData, from: ws.userId }));
+  }
 }

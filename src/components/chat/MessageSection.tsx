@@ -3,13 +3,10 @@
 import { useState } from 'react';
 import Image from 'next/image';
 import UserAvatar from '@/components/users/UserAvatar';
-import { MessageSquare, SmilePlus, Reply, Pencil, Trash2, X, Languages } from 'lucide-react';
+import { MessageSquare, SmilePlus, Reply, Pencil, Trash2, X } from 'lucide-react';
 import { User, ChatMessage } from "@/types";
 import { renderRichText, messageMentionsUser } from '@/lib/chat/richText';
-import { TRANSCRIPT_LANGUAGES } from '@/lib/chat/transcriptLanguages';
-import useVoiceTranscripts from '@/hooks/useVoiceTranscripts';
 import VoiceMessagePlayer from './VoiceMessagePlayer';
-import VoiceTranscript from './VoiceTranscript';
 import ReactionPicker from './ReactionPicker';
 
 interface MessageSectionProps {
@@ -84,10 +81,9 @@ interface BubbleContentProps {
   mentionCandidates: string[];
   isMentioned: boolean;
   onOpenImage: (src: string) => void;
-  transcripts: ReturnType<typeof useVoiceTranscripts>;
 }
 
-function BubbleContent({ message, currentUsername, mentionCandidates, isMentioned, onOpenImage, transcripts }: Readonly<BubbleContentProps>) {
+function BubbleContent({ message, currentUsername, mentionCandidates, isMentioned, onOpenImage }: Readonly<BubbleContentProps>) {
   const bubbleClass = message.isOwn
     ? 'bg-brand text-white rounded-br-sm'
     : `bg-gray-100 text-gray-800 rounded-bl-sm${isMentioned ? ' ring-2 ring-yellow-400' : ''}`;
@@ -118,16 +114,7 @@ function BubbleContent({ message, currentUsername, mentionCandidates, isMentione
         </button>
       )}
       {message.kind === 'voice' && message.mediaData && (
-        <>
-          <VoiceMessagePlayer src={message.mediaData} durationSec={message.durationSec} isOwn={message.isOwn} />
-          <VoiceTranscript
-            isOwn={message.isOwn}
-            language={transcripts.language}
-            status={transcripts.getEntry(message.id)?.status}
-            text={transcripts.getEntry(message.id)?.text}
-            onRequest={() => transcripts.requestTranscript(message.id, message.mediaData!)}
-          />
-        </>
+        <VoiceMessagePlayer src={message.mediaData} durationSec={message.durationSec} isOwn={message.isOwn} />
       )}
       {message.edited && (
         <span className={`ml-1 text-[10px] italic ${message.isOwn ? 'text-white/70' : 'text-gray-400'}`}>(edited)</span>
@@ -215,10 +202,9 @@ interface MessageBubbleProps {
   onEdit: (message: ChatMessage) => void;
   onDelete: (messageId: string) => void;
   onOpenImage: (src: string) => void;
-  transcripts: ReturnType<typeof useVoiceTranscripts>;
 }
 
-function MessageBubble({ message, currentUsername, mentionCandidates, onReact, onReply, onEdit, onDelete, onOpenImage, transcripts }: Readonly<MessageBubbleProps>) {
+function MessageBubble({ message, currentUsername, mentionCandidates, onReact, onReply, onEdit, onDelete, onOpenImage }: Readonly<MessageBubbleProps>) {
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const reactionEntries = Object.entries(message.reactions ?? {}).filter(([, users]) => users.length > 0);
   const isMentioned = !message.isOwn && messageMentionsUser(message.content, currentUsername);
@@ -248,7 +234,7 @@ function MessageBubble({ message, currentUsername, mentionCandidates, onReact, o
           <p className="text-[10px] text-gray-400 font-medium mb-0.5 ml-1">{message.sender ?? 'Unknown'}</p>
         )}
         <div className="relative group z-0 hover:z-20 focus-within:z-20">
-          <BubbleContent message={message} currentUsername={currentUsername} mentionCandidates={mentionCandidates} isMentioned={isMentioned} onOpenImage={onOpenImage} transcripts={transcripts} />
+          <BubbleContent message={message} currentUsername={currentUsername} mentionCandidates={mentionCandidates} isMentioned={isMentioned} onOpenImage={onOpenImage} />
           <BubbleActions
             message={message}
             onReply={onReply}
@@ -275,23 +261,9 @@ function MessageBubble({ message, currentUsername, mentionCandidates, onReact, o
 
 export default function MessageSection({ receivedMessages, messagesEndRef, currentUser, typingUsers, mentionCandidates, onReact, onReply, onEdit, onDelete }: Readonly<MessageSectionProps>) {
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const transcripts = useVoiceTranscripts();
 
   return (
     <div className="flex flex-col flex-grow min-h-0">
-      <div className="flex items-center justify-end gap-1.5 px-1 mb-1.5">
-        <Languages className="h-3.5 w-3.5 text-gray-400" />
-        <select
-          value={transcripts.language ?? ''}
-          onChange={(e) => transcripts.setLanguage(e.target.value || null)}
-          className="bg-transparent text-xs text-gray-500 focus:outline-none"
-        >
-          <option value="">Voice transcripts off</option>
-          {TRANSCRIPT_LANGUAGES.map((option) => (
-            <option key={option.code} value={option.code}>Transcribe voice to {option.label}</option>
-          ))}
-        </select>
-      </div>
       <div className="flex-grow overflow-y-auto bg-white rounded-2xl p-4 pt-8 scrollbar-thin">
         {receivedMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-gray-400 py-12">
@@ -310,7 +282,6 @@ export default function MessageSection({ receivedMessages, messagesEndRef, curre
               onEdit={onEdit}
               onDelete={onDelete}
               onOpenImage={setLightboxSrc}
-              transcripts={transcripts}
             />
           ))
         )}

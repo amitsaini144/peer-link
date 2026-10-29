@@ -3,6 +3,7 @@ import { User, InboundWsMessage } from '@/types';
 import useWebSocketConnection from './useWebSocketConnection';
 import usePeerConnection from './usePeerConnection';
 import useCall from './useCall';
+import useMeeting from './useMeeting';
 import useChatMessages from './useChatMessages';
 import { Identity } from './useIdentity';
 
@@ -38,18 +39,12 @@ function useVideoCallApp(
 
   const displayName = identity.mode === 'clerk' || identity.mode === 'guest' ? identity.displayName : '';
 
-  const {
-    receivedMessages,
-    typingUsers,
-    handleChatWsMessage,
-    sendMessage,
-    sendVoiceMessage,
-    sendImageMessage,
-    sendTyping,
-    sendReaction,
-    sendEditMessage,
-    sendDeleteMessage,
-  } = useChatMessages(socketRef, currentUserRef, displayName);
+  const roomChat = useChatMessages(socketRef, currentUserRef, displayName);
+  const { receivedMessages, handleChatWsMessage } = roomChat;
+
+  // Separate chat that only reaches people in the group meeting.
+  const meetingChat = useChatMessages(socketRef, currentUserRef, displayName, 'meeting');
+  const { handleChatWsMessage: handleMeetingChatWsMessage, clearMessages: clearMeetingChat } = meetingChat;
 
   const {
     inCall,
@@ -73,6 +68,27 @@ function useVideoCallApp(
     toast,
   );
 
+  const {
+    inMeeting,
+    inMeetingRef,
+    localStream: meetingLocalStream,
+    remoteStreams: meetingRemoteStreams,
+    meetingParticipants,
+    joinMeeting,
+    leaveMeeting,
+    handleMeetingJoined,
+    handleMeetingOffer,
+    handleMeetingAnswer,
+    handleMeetingIce,
+    handleMeetingState,
+    handleMeetingFull,
+  } = useMeeting(socketRef, currentUserRef, toast);
+
+  // Meeting chat lasts only as long as you're in the meeting.
+  useEffect(() => {
+    if (!inMeeting) clearMeetingChat();
+  }, [inMeeting, clearMeetingChat]);
+
   // Update the ref synchronously every render — WS handler always uses current callbacks.
   onMessageRef.current = useCallback((event: MessageEvent) => {
     const data = JSON.parse(event.data) as InboundWsMessage;
@@ -83,6 +99,7 @@ function useVideoCallApp(
       case 'edit':
       case 'delete':
         handleChatWsMessage(data);
+        handleMeetingChatWsMessage(data);
         break;
       case 'userList':
         setConnectedUsers(data.users.map(u => ({ ...u, imageUrl: u.imageUrl ?? null })));
@@ -91,7 +108,12 @@ function useVideoCallApp(
         setCurrentUser(data.user);
         break;
       case 'videoCallOffer':
-        handleIncomingCall(data);
+        // Can't take a 1:1 call while in the group meeting.
+        if (inMeetingRef.current) {
+          socketRef.current?.send(JSON.stringify({ type: 'callBusy', to: data.from }));
+        } else {
+          handleIncomingCall(data);
+        }
         break;
       case 'videoCallAnswer':
         handleCallAccepted(data);
@@ -117,21 +139,42 @@ function useVideoCallApp(
       case 'callFailed':
         handleCallDeclined('unavailable');
         break;
+      case 'meetingState':
+        handleMeetingState(data);
+        break;
+      case 'meetingJoined':
+        handleMeetingJoined(data);
+        break;
+      case 'meetingFull':
+        handleMeetingFull();
+        break;
+      case 'meetingOffer':
+        handleMeetingOffer(data);
+        break;
+      case 'meetingAnswer':
+        handleMeetingAnswer(data);
+        break;
+      case 'meetingIce':
+        handleMeetingIce(data);
+        break;
     }
-  }, [handleChatWsMessage, handleIncomingCall, handleCallAccepted, handleCallEnded, handleCallDeclined, handleNewICECandidate, handleIceRestartOffer, handleIceRestartAnswer]);
+  }, [handleChatWsMessage, handleMeetingChatWsMessage, handleIncomingCall, handleCallAccepted, handleCallEnded, handleCallDeclined, handleNewICECandidate, handleIceRestartOffer, handleIceRestartAnswer, inMeetingRef, socketRef, handleMeetingState, handleMeetingJoined, handleMeetingFull, handleMeetingOffer, handleMeetingAnswer, handleMeetingIce]);
 
   // Notify the peer immediately if the tab is closed/refreshed mid-call,
   // instead of leaving them stuck on the call screen until their own
   // connection eventually times out.
   useEffect(() => {
-    const handleUnload = () => endCall();
+    const handleUnload = () => {
+      endCall();
+      leaveMeeting();
+    };
     window.addEventListener('pagehide', handleUnload);
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       window.removeEventListener('pagehide', handleUnload);
       window.removeEventListener('beforeunload', handleUnload);
     };
-  }, [endCall]);
+  }, [endCall, leaveMeeting]);
 
   return {
     connectedUsers,
@@ -148,14 +191,14 @@ function useVideoCallApp(
     rejectCall,
     handleCallEnded,
     endCall,
-    sendMessage,
-    sendVoiceMessage,
-    sendImageMessage,
-    sendReaction,
-    sendEditMessage,
-    sendDeleteMessage,
-    sendTyping,
-    typingUsers,
+    inMeeting,
+    meetingLocalStream,
+    meetingRemoteStreams,
+    meetingParticipants,
+    joinMeeting,
+    leaveMeeting,
+    roomChat,
+    meetingChat,
   };
 }
 

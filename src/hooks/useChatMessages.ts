@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ChatMessage, InboundWsMessage, MessageKind, ReplyToRef, User } from '@/types';
+import { ChatChannel, ChatMessage, InboundWsMessage, MessageKind, ReplyToRef, User } from '@/types';
 
 const TYPING_TIMEOUT_MS = 5000;
 
@@ -35,10 +35,13 @@ export type ChatWsMessage = Extract<
   { type: 'message' | 'typing' | 'reaction' | 'edit' | 'delete' }
 >;
 
+// One instance per chat channel — the room chat and the meeting chat keep
+// completely separate message lists.
 function useChatMessages(
   socketRef: React.MutableRefObject<WebSocket | null>,
   currentUserRef: React.MutableRefObject<User | null>,
   displayName: string,
+  channel: ChatChannel = 'room',
 ) {
   const [receivedMessages, setReceivedMessages] = useState<ChatMessage[]>([]);
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
@@ -54,6 +57,7 @@ function useChatMessages(
   }, []);
 
   const handleChatWsMessage = useCallback((data: ChatWsMessage) => {
+    if ((data.channel ?? 'room') !== channel) return;
     switch (data.type) {
       case 'message':
         setReceivedMessages(prev => [...prev, {
@@ -120,6 +124,13 @@ function useChatMessages(
         )));
         break;
     }
+  }, [channel]);
+
+  const clearMessages = useCallback(() => {
+    typingTimeoutsRef.current.forEach(clearTimeout);
+    typingTimeoutsRef.current.clear();
+    setReceivedMessages([]);
+    setTypingUsers(new Set());
   }, []);
 
   const sendChatPayload = useCallback((payload: {
@@ -136,6 +147,7 @@ function useChatMessages(
         type: 'message',
         id,
         sender: displayName,
+        channel,
         ...payload,
       }));
       // Add own message immediately with isOwn: true — no server echo needed.
@@ -147,7 +159,7 @@ function useChatMessages(
         ...payload,
       }]);
     }
-  }, [socketRef, currentUserRef, displayName]);
+  }, [socketRef, currentUserRef, displayName, channel]);
 
   const sendMessage = useCallback((content: string, replyTarget?: ChatMessage) => {
     const replyTo: ReplyToRef | undefined = replyTarget ? {
@@ -171,16 +183,16 @@ function useChatMessages(
     if (typingStateRef.current === isTyping) return;
     typingStateRef.current = isTyping;
     if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({ type: 'typing', isTyping }));
+      socketRef.current.send(JSON.stringify({ type: 'typing', isTyping, channel }));
     }
-  }, [socketRef]);
+  }, [socketRef, channel]);
 
   const sendReactionEvent = useCallback((messageId: string, emoji: string, remove: boolean) => {
-    socketRef.current?.send(JSON.stringify({ type: 'reaction', messageId, emoji, remove }));
+    socketRef.current?.send(JSON.stringify({ type: 'reaction', messageId, emoji, remove, channel }));
     setReceivedMessages(prev => prev.map(message => (
       message.id === messageId ? applyReactionToMessage(message, emoji, displayName, remove) : message
     )));
-  }, [socketRef, displayName]);
+  }, [socketRef, displayName, channel]);
 
   const sendReaction = useCallback((messageId: string, emoji: string) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN || !currentUserRef.current) return;
@@ -203,26 +215,27 @@ function useChatMessages(
 
   const sendEditMessage = useCallback((messageId: string, content: string) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
-    socketRef.current.send(JSON.stringify({ type: 'edit', messageId, content }));
+    socketRef.current.send(JSON.stringify({ type: 'edit', messageId, content, channel }));
     setReceivedMessages(prev => prev.map(message => (
       message.id === messageId ? { ...message, content, edited: true } : message
     )));
-  }, [socketRef]);
+  }, [socketRef, channel]);
 
   const sendDeleteMessage = useCallback((messageId: string) => {
     if (socketRef.current?.readyState !== WebSocket.OPEN) return;
-    socketRef.current.send(JSON.stringify({ type: 'delete', messageId }));
+    socketRef.current.send(JSON.stringify({ type: 'delete', messageId, channel }));
     setReceivedMessages(prev => prev.map(message => (
       message.id === messageId
         ? { ...message, deleted: true, content: undefined, mediaData: undefined, mediaMimeType: undefined, durationSec: undefined, reactions: undefined }
         : message
     )));
-  }, [socketRef]);
+  }, [socketRef, channel]);
 
   return {
     receivedMessages,
     typingUsers,
     handleChatWsMessage,
+    clearMessages,
     sendMessage,
     sendVoiceMessage,
     sendImageMessage,

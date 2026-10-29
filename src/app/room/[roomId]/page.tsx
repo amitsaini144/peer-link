@@ -1,21 +1,20 @@
 "use client"
-import { useEffect, useRef, useCallback, useState } from 'react'
+import { useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation';
 import { useToast } from "@/components/ui/use-toast"
 import { motion } from 'framer-motion';
-import { Video, Link as LinkIcon } from 'lucide-react';
+import { Video, Users, Link as LinkIcon } from 'lucide-react';
 import useVideoCallApp from '@/hooks/useVideoCallApp';
 import useUnfocusedTabNotifications from '@/hooks/useUnfocusedTabNotifications';
 import useIdentity from '@/hooks/useIdentity';
-import { ChatMessage } from '@/types';
 import Navbar from '@/components/layout/Navbar';
 import LoadingScreen from '@/components/layout/LoadingScreen';
 import MovingCloudsBackground from '@/components/background/MovingCloudsBackground';
 import UserCard from '@/components/users/UserCard';
-import MessageSection from '@/components/chat/MessageSection';
-import MessageInput from '@/components/chat/MessageInput';
+import ChatPanel from '@/components/chat/ChatPanel';
 import VideoCallOverlay from '@/components/call/VideoCallOverlay';
 import IncomingCallDialog from '@/components/call/IncomingCallDialog';
+import MeetingOverlay from '@/components/call/MeetingOverlay';
 
 const ROOM_SOFT_CAP = 5;
 
@@ -24,7 +23,6 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
   const identity = useIdentity();
   const router = useRouter();
   const { toast } = useToast();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const hasWarnedFullRef = useRef(false);
 
   useEffect(() => {
@@ -43,39 +41,18 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
     incomingCall,
     acceptCall,
     rejectCall,
-    sendMessage,
-    sendImageMessage,
-    sendVoiceMessage,
-    sendReaction,
-    sendEditMessage,
-    sendDeleteMessage,
-    sendTyping,
-    typingUsers,
     connectionState,
+    inMeeting,
+    meetingLocalStream,
+    meetingRemoteStreams,
+    meetingParticipants,
+    joinMeeting,
+    leaveMeeting,
+    roomChat,
+    meetingChat,
   } = useVideoCallApp(identity, toast, roomId);
 
-  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
-  const [editingMessage, setEditingMessage] = useState<ChatMessage | null>(null);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [receivedMessages, scrollToBottom]);
-
   useUnfocusedTabNotifications(receivedMessages);
-
-  const handleReply = useCallback((message: ChatMessage) => {
-    setEditingMessage(null);
-    setReplyingTo(message);
-  }, []);
-
-  const handleEdit = useCallback((message: ChatMessage) => {
-    setReplyingTo(null);
-    setEditingMessage(message);
-  }, []);
 
   const handleCopyInviteLink = useCallback(() => {
     navigator.clipboard.writeText(window.location.href);
@@ -106,6 +83,33 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
 
   const otherConnectedUsers = connectedUsers.filter(u => u.id !== currentUser.id);
   const mentionCandidates = otherConnectedUsers.map(u => u.username).filter((name): name is string => !!name);
+  const meetingCount = meetingParticipants.length;
+  const meetingMentionCandidates = otherConnectedUsers
+    .filter(u => meetingParticipants.includes(u.id))
+    .map(u => u.username)
+    .filter((name): name is string => !!name);
+  const incomingMeetingMessageCount = meetingChat.receivedMessages.filter(m => !m.isOwn).length;
+
+  const meetingBar = (
+    <div className='flex items-center justify-between gap-3 mx-4 mt-4 px-4 py-2.5 rounded-2xl bg-white/15 backdrop-blur-2xl border border-white/25 text-white'>
+      <div className='flex items-center gap-2 min-w-0'>
+        {meetingCount > 0 && <span className='w-2 h-2 flex-shrink-0 rounded-full bg-emerald-400 animate-pulse' />}
+        <p className='text-sm font-medium truncate'>
+          {meetingCount > 0
+            ? `Meeting in progress · ${meetingCount} ${meetingCount === 1 ? 'person' : 'people'}`
+            : 'Group meeting'}
+        </p>
+      </div>
+      <button
+        onClick={joinMeeting}
+        disabled={inCall || !!incomingCall}
+        className='flex flex-shrink-0 items-center gap-1.5 bg-white text-sky-700 hover:bg-white/90 disabled:opacity-50 transition-colors text-sm font-semibold px-3 py-1.5 rounded-xl'
+      >
+        <Users className='h-4 w-4' />
+        {meetingCount > 0 ? 'Join meeting' : 'Start meeting'}
+      </button>
+    </div>
+  );
 
   return (
     <div className='relative flex flex-col h-dvh overflow-hidden bg-gradient-to-bl from-sky-700 via-sky-500 to-sky-300'>
@@ -117,6 +121,7 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
         />
 
         <div className='flex flex-col flex-grow min-h-0 pt-16'>
+          {meetingBar}
           {otherConnectedUsers.length === 0 ? (
             <div className='flex flex-grow items-center justify-center'>
               <motion.div
@@ -162,7 +167,7 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
                         userName={u.username || 'Unknown'}
                         imageUrl={u.imageUrl}
                         onClick={() => startCall(u)}
-                        disabled={inCall || !!incomingCall}
+                        disabled={inCall || !!incomingCall || inMeeting}
                       />
                     ))}
                   </div>
@@ -170,35 +175,25 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
               </aside>
 
               <main className='flex flex-col flex-grow min-h-0'>
-                <MessageSection
-                  receivedMessages={receivedMessages}
-                  messagesEndRef={messagesEndRef}
-                  currentUser={currentUser}
-                  typingUsers={typingUsers}
-                  mentionCandidates={mentionCandidates}
-                  onReact={sendReaction}
-                  onReply={handleReply}
-                  onEdit={handleEdit}
-                  onDelete={sendDeleteMessage}
-                />
-                <MessageInput
-                  onSend={sendMessage}
-                  onSendImage={sendImageMessage}
-                  onSendVoice={sendVoiceMessage}
-                  onTyping={sendTyping}
-                  mentionCandidates={mentionCandidates}
-                  replyingTo={replyingTo}
-                  onCancelReply={() => setReplyingTo(null)}
-                  editingMessage={editingMessage}
-                  onCancelEdit={() => setEditingMessage(null)}
-                  onSaveEdit={sendEditMessage}
-                />
+                <ChatPanel chat={roomChat} currentUser={currentUser} mentionCandidates={mentionCandidates} />
               </main>
             </div>
           )}
         </div>
       </div>
 
+      <MeetingOverlay
+        inMeeting={inMeeting}
+        currentUser={currentUser}
+        localStream={meetingLocalStream}
+        remoteStreams={meetingRemoteStreams}
+        participantIds={meetingParticipants}
+        users={connectedUsers}
+        onLeave={leaveMeeting}
+        onCopyInviteLink={handleCopyInviteLink}
+        chat={<ChatPanel chat={meetingChat} currentUser={currentUser} mentionCandidates={meetingMentionCandidates} />}
+        incomingMessageCount={incomingMeetingMessageCount}
+      />
       <VideoCallOverlay inCall={inCall} localStream={localStream} remoteStream={remoteStream} handleCallEnded={endCall} />
       {incomingCall && (
         <IncomingCallDialog
