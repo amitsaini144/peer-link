@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Image from 'next/image';
+import UserAvatar from '@/components/users/UserAvatar';
 import { MessageSquare, SmilePlus, Reply, Pencil, Trash2, X, Languages } from 'lucide-react';
 import { User, ChatMessage } from "@/types";
 import { renderRichText, messageMentionsUser } from '@/lib/chat/richText';
@@ -234,15 +235,13 @@ function MessageBubble({ message, currentUsername, mentionCandidates, onReact, o
   return (
     <div className={`mb-3 flex items-end gap-2 ${message.isOwn ? 'justify-end' : 'justify-start'}`}>
       {!message.isOwn && (
-        <div className="w-7 h-7 rounded-full bg-brand/20 flex items-center justify-center flex-shrink-0 mb-0.5 overflow-hidden">
-          {message.senderImageUrl ? (
-            <Image src={message.senderImageUrl} alt={message.sender} width={28} height={28} className="object-cover" />
-          ) : (
-            <span className="text-brand text-xs font-bold">
-              {message.sender?.charAt(0).toUpperCase() ?? '?'}
-            </span>
-          )}
-        </div>
+        <UserAvatar
+          name={message.sender}
+          imageUrl={message.senderImageUrl}
+          size={28}
+          className="bg-brand/20 mb-0.5"
+          fallbackClassName="text-brand text-xs"
+        />
       )}
       <div className={`max-w-[70%] flex flex-col ${message.isOwn ? 'items-end' : 'items-start'}`}>
         {!message.isOwn && (

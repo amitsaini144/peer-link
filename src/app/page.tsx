@@ -1,5 +1,5 @@
 "use client"
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { SignInButton } from '@clerk/nextjs';
 import { motion } from 'framer-motion';
@@ -15,6 +15,19 @@ export default function Home() {
   const identity = useIdentity();
   const router = useRouter();
   const [joinCode, setJoinCode] = useState('');
+  // Room the visitor was trying to open before being asked to pick an identity.
+  const [pendingRoom, setPendingRoom] = useState<string | null>(null);
+
+  useEffect(() => {
+    const room = normalizeRoomInput(new URLSearchParams(window.location.search).get('room') ?? '');
+    if (room) setPendingRoom(room);
+  }, []);
+
+  useEffect(() => {
+    if (pendingRoom && (identity.mode === 'guest' || identity.mode === 'clerk')) {
+      router.replace(`/room/${encodeURIComponent(pendingRoom)}`);
+    }
+  }, [pendingRoom, identity.mode, router]);
 
   const handleNewRoom = useCallback(() => {
     router.push(`/room/${generateRoomId()}`);
@@ -32,11 +45,11 @@ export default function Home() {
     if (identity.mode === 'anonymous') identity.refresh();
   }, [identity]);
 
-  if (identity.mode === 'loading') {
+  if (identity.mode === 'loading' || (pendingRoom && identity.mode !== 'anonymous')) {
     return (
       <div className='relative flex flex-col h-dvh overflow-hidden bg-gradient-to-bl from-sky-700 via-sky-500 to-sky-300'>
         <MovingCloudsBackground />
-        <LoadingScreen message='Loading...' />
+        <LoadingScreen message={pendingRoom ? 'Joining room...' : 'Loading...'} />
       </div>
     );
   }
@@ -56,8 +69,12 @@ export default function Home() {
               <Video className='h-10 w-10 text-white' />
             </div>
             <div className='text-center'>
-              <p className='text-2xl font-semibold'>Welcome to PeerLink</p>
-              <p className='text-white/60 text-sm mt-1'>Sign in for a saved identity, or jump straight in as a guest</p>
+              <p className='text-2xl font-semibold'>{pendingRoom ? "You've been invited to a room" : 'Welcome to PeerLink'}</p>
+              <p className='text-white/60 text-sm mt-1'>
+                {pendingRoom
+                  ? 'Sign in or continue as a guest to join'
+                  : 'Sign in for a saved identity, or jump straight in as a guest'}
+              </p>
             </div>
 
             <SignInButton mode='modal'>

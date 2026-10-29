@@ -25,6 +25,11 @@ function useWebSocketConnection(
 
       if (identity.mode === 'clerk') {
         const token = await identity.getToken({ skipCache: true });
+        if (!token) {
+          logger.error('No Clerk session token available for WebSocket auth');
+          setConnectionState('disconnected');
+          return;
+        }
         wsUrl = `${WS_URL}?token=${token}&room=${encodeURIComponent(roomId)}`;
       } else {
         wsUrl = `${WS_URL}?guestId=${encodeURIComponent(identity.guestId)}&guestName=${encodeURIComponent(identity.displayName)}&room=${encodeURIComponent(roomId)}`;
@@ -41,7 +46,10 @@ function useWebSocketConnection(
 
       ws.onmessage = (event) => onMessageRef.current(event);
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (event.code === 1008) {
+          logger.error(`WebSocket rejected by server: ${event.reason || 'policy violation'}`);
+        }
         socketRef.current = null;
         setConnectionState('disconnected');
         reconnectTimerRef.current = setTimeout(connectWebSocket, 10000);

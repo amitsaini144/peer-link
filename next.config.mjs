@@ -1,10 +1,13 @@
+// Local WS server runs over plain ws://, which the `wss:` source doesn't cover.
+const devConnectSrc = process.env.NODE_ENV === 'development' ? ' ws://localhost:*' : '';
+
 const ContentSecurityPolicy = `
   default-src 'self';
   script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://clerk.amit144.com https://challenges.cloudflare.com;
   style-src 'self' 'unsafe-inline';
   img-src 'self' data: blob: https://img.clerk.com https://images.clerk.dev https://api.dicebear.com;
   font-src 'self' data:;
-  connect-src 'self' https://*.clerk.accounts.dev https://clerk.amit144.com https: wss:;
+  connect-src 'self' https://*.clerk.accounts.dev https://clerk.amit144.com https: wss:${devConnectSrc};
   frame-src 'self' https://*.clerk.accounts.dev https://clerk.amit144.com https://challenges.cloudflare.com;
   media-src 'self' blob: data:;
   worker-src 'self' blob:;

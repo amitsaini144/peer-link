@@ -28,8 +28,8 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
   const hasWarnedFullRef = useRef(false);
 
   useEffect(() => {
-    if (identity.mode === 'anonymous') router.replace('/');
-  }, [identity.mode, router]);
+    if (identity.mode === 'anonymous') router.replace(`/?room=${encodeURIComponent(roomId)}`);
+  }, [identity.mode, router, roomId]);
 
   const {
     connectedUsers,

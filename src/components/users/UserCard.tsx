@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState } from 'react';
-import Image from 'next/image';
+import UserAvatar from '@/components/users/UserAvatar';
 import { Button } from '@/components/ui/button';
 import { motion } from 'framer-motion';
 import { Video } from 'lucide-react';
@@ -35,15 +35,13 @@ export default function UserCard({ userName, imageUrl, onClick, disabled = false
       transition={{ duration: 0.4 }}
     >
       <div className="relative flex-shrink-0">
-        <div className="w-10 h-10 rounded-full bg-brand flex items-center justify-center overflow-hidden">
-          {imageUrl ? (
-            <Image src={imageUrl} alt={userName} width={40} height={40} className="object-cover" />
-          ) : (
-            <span className="text-white font-semibold text-sm">
-              {userName.charAt(0).toUpperCase()}
-            </span>
-          )}
-        </div>
+        <UserAvatar
+          name={userName}
+          imageUrl={imageUrl}
+          size={40}
+          className="bg-brand"
+          fallbackClassName="text-white text-sm"
+        />
         <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 border-2 border-white rounded-full" />
       </div>
 
