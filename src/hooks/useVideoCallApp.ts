@@ -4,6 +4,7 @@ import useWebSocketConnection from './useWebSocketConnection';
 import usePeerConnection from './usePeerConnection';
 import useCall from './useCall';
 import useMeeting from './useMeeting';
+import useMeetingRecorder from './useMeetingRecorder';
 import useChatMessages from './useChatMessages';
 import { Identity } from './useIdentity';
 
@@ -82,7 +83,24 @@ function useVideoCallApp(
     handleMeetingIce,
     handleMeetingState,
     handleMeetingFull,
+    screenShareSupported,
+    screenSharer,
+    localScreenStream,
+    remoteScreenStreams,
+    startScreenShare,
+    stopScreenShare,
+    handleScreenShareState,
   } = useMeeting(socketRef, currentUserRef, toast);
+
+  const recorder = useMeetingRecorder({
+    socketRef,
+    inMeeting,
+    localStream: meetingLocalStream,
+    remoteStreams: meetingRemoteStreams,
+    roomId,
+    toast,
+  });
+  const { handleRecordingState, isRecordingRef } = recorder;
 
   // Meeting chat lasts only as long as you're in the meeting.
   useEffect(() => {
@@ -157,8 +175,14 @@ function useVideoCallApp(
       case 'meetingIce':
         handleMeetingIce(data);
         break;
+      case 'recordingState':
+        handleRecordingState(data);
+        break;
+      case 'screenShareState':
+        handleScreenShareState(data);
+        break;
     }
-  }, [handleChatWsMessage, handleMeetingChatWsMessage, handleIncomingCall, handleCallAccepted, handleCallEnded, handleCallDeclined, handleNewICECandidate, handleIceRestartOffer, handleIceRestartAnswer, inMeetingRef, socketRef, handleMeetingState, handleMeetingJoined, handleMeetingFull, handleMeetingOffer, handleMeetingAnswer, handleMeetingIce]);
+  }, [handleChatWsMessage, handleMeetingChatWsMessage, handleIncomingCall, handleCallAccepted, handleCallEnded, handleCallDeclined, handleNewICECandidate, handleIceRestartOffer, handleIceRestartAnswer, inMeetingRef, socketRef, handleMeetingState, handleMeetingJoined, handleMeetingFull, handleMeetingOffer, handleMeetingAnswer, handleMeetingIce, handleRecordingState, handleScreenShareState]);
 
   // Notify the peer immediately if the tab is closed/refreshed mid-call,
   // instead of leaving them stuck on the call screen until their own
@@ -168,13 +192,24 @@ function useVideoCallApp(
       endCall();
       leaveMeeting();
     };
+    // While recording, ask before leaving instead — the user may cancel, so
+    // don't leave the meeting yet; pagehide handles it if they do go. What's
+    // already recorded is kept and offered for download on the next visit.
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (isRecordingRef.current) {
+        event.preventDefault();
+        event.returnValue = '';
+        return;
+      }
+      handleUnload();
+    };
     window.addEventListener('pagehide', handleUnload);
-    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       window.removeEventListener('pagehide', handleUnload);
-      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [endCall, leaveMeeting]);
+  }, [endCall, leaveMeeting, isRecordingRef]);
 
   return {
     connectedUsers,
@@ -197,6 +232,15 @@ function useVideoCallApp(
     meetingParticipants,
     joinMeeting,
     leaveMeeting,
+    screenShare: {
+      isSupported: screenShareSupported,
+      sharer: screenSharer,
+      localStream: localScreenStream,
+      remoteStreams: remoteScreenStreams,
+      start: startScreenShare,
+      stop: stopScreenShare,
+    },
+    recorder,
     roomChat,
     meetingChat,
   };

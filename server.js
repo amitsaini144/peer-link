@@ -19,6 +19,8 @@ const clerkClient = createClerkClient({
 const wss = new WebSocketServer({ server: httpServer, maxPayload: 5 * 1024 * 1024 });
 let rooms = new Map(); // roomId -> Map<userId, ws>
 let meetings = new Map(); // roomId -> Set<userId> currently in the group meeting
+let recordings = new Map(); // roomId -> Set<userId> recording the meeting on their own device
+let screenSharers = new Map(); // roomId -> userId presenting their screen in the meeting
 
 const HEARTBEAT_INTERVAL_MS = 30000;
 
@@ -203,6 +205,18 @@ wss.on("connection", async function connection(ws, req) {
         case "meetingIce":
           forwardMeetingSignal(messageData, ws);
           break;
+        case "recordingStart":
+          handleRecordingStart(ws);
+          break;
+        case "recordingStop":
+          removeFromRecordings(ws.roomId, ws.userId);
+          break;
+        case "screenShareStart":
+          handleScreenShareStart(ws);
+          break;
+        case "screenShareStop":
+          clearScreenSharer(ws.roomId, ws.userId);
+          break;
       }
     } catch (error) {
       console.error("Error handling WS message:", error);
@@ -223,6 +237,8 @@ wss.on("connection", async function connection(ws, req) {
   });
   broadcastUserList(roomId);
   ws.send(JSON.stringify({ type: "meetingState", participants: getMeetingParticipants(roomId) }));
+  ws.send(JSON.stringify({ type: "recordingState", recorders: getRecorders(roomId) }));
+  ws.send(JSON.stringify({ type: "screenShareState", sharer: screenSharers.get(roomId) ?? null }));
 });
 
 // Chat events are scoped to a channel: the whole room (default) or only the
@@ -428,6 +444,9 @@ function broadcastMeetingState(roomId) {
 }
 
 function removeFromMeeting(roomId, userId) {
+  // Leaving the meeting ends that person's recording and presentation too.
+  removeFromRecordings(roomId, userId);
+  clearScreenSharer(roomId, userId);
   const meeting = meetings.get(roomId);
   if (!meeting || !meeting.delete(userId)) return;
   if (meeting.size === 0) meetings.delete(roomId);
@@ -468,4 +487,65 @@ function forwardMeetingSignal(messageData, ws) {
   if (target && target.readyState === WebSocket.OPEN) {
     target.send(JSON.stringify({ ...messageData, from: ws.userId }));
   }
+}
+
+// Recordings never pass through the server — each recorder saves the meeting
+// to their own device. The server only tracks who is recording so everyone
+// in the room can be shown a recording notice.
+function getRecorders(roomId) {
+  return Array.from(recordings.get(roomId) ?? []);
+}
+
+function broadcastRecordingState(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const payload = JSON.stringify({ type: "recordingState", recorders: getRecorders(roomId) });
+  room.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(payload);
+  });
+}
+
+function handleRecordingStart(ws) {
+  // Only people in the meeting can record it.
+  if (!meetings.get(ws.roomId)?.has(ws.userId)) return;
+  let recorders = recordings.get(ws.roomId);
+  if (!recorders) {
+    recorders = new Set();
+    recordings.set(ws.roomId, recorders);
+  }
+  if (recorders.has(ws.userId)) return;
+  recorders.add(ws.userId);
+  broadcastRecordingState(ws.roomId);
+}
+
+function removeFromRecordings(roomId, userId) {
+  const recorders = recordings.get(roomId);
+  if (!recorders || !recorders.delete(userId)) return;
+  if (recorders.size === 0) recordings.delete(roomId);
+  broadcastRecordingState(roomId);
+}
+
+// One presenter at a time. Starting while someone else presents takes over —
+// their client sees it's no longer them and stops sharing. The screen itself
+// travels peer to peer like the cameras; the server only tracks who it is.
+function broadcastScreenShareState(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const payload = JSON.stringify({ type: "screenShareState", sharer: screenSharers.get(roomId) ?? null });
+  room.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(payload);
+  });
+}
+
+function handleScreenShareStart(ws) {
+  if (!meetings.get(ws.roomId)?.has(ws.userId)) return;
+  if (screenSharers.get(ws.roomId) === ws.userId) return;
+  screenSharers.set(ws.roomId, ws.userId);
+  broadcastScreenShareState(ws.roomId);
+}
+
+function clearScreenSharer(roomId, userId) {
+  if (screenSharers.get(roomId) !== userId) return;
+  screenSharers.delete(roomId);
+  broadcastScreenShareState(roomId);
 }

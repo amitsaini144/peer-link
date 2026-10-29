@@ -15,6 +15,7 @@ import ChatPanel from '@/components/chat/ChatPanel';
 import VideoCallOverlay from '@/components/call/VideoCallOverlay';
 import IncomingCallDialog from '@/components/call/IncomingCallDialog';
 import MeetingOverlay from '@/components/call/MeetingOverlay';
+import RecordingRecovery from '@/components/call/RecordingRecovery';
 
 const ROOM_SOFT_CAP = 5;
 
@@ -48,6 +49,8 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
     meetingParticipants,
     joinMeeting,
     leaveMeeting,
+    screenShare,
+    recorder,
     roomChat,
     meetingChat,
   } = useVideoCallApp(identity, toast, roomId);
@@ -193,7 +196,10 @@ export default function RoomPage({ params }: Readonly<{ params: { roomId: string
         onCopyInviteLink={handleCopyInviteLink}
         chat={<ChatPanel chat={meetingChat} currentUser={currentUser} mentionCandidates={meetingMentionCandidates} />}
         incomingMessageCount={incomingMeetingMessageCount}
+        recorder={recorder}
+        screenShare={screenShare}
       />
+      {!inMeeting && <RecordingRecovery />}
       <VideoCallOverlay inCall={inCall} localStream={localStream} remoteStream={remoteStream} handleCallEnded={endCall} />
       {incomingCall && (
         <IncomingCallDialog

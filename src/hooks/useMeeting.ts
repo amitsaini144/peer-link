@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { User, OutboundWsMessage } from '@/types';
 import { getRtcConfiguration } from '@/lib/webrtc/rtcConfig';
 import { logger } from '@/lib/logger';
@@ -6,6 +6,29 @@ import { logger } from '@/lib/logger';
 type ToastFn = (options: { description: string }) => void;
 
 const ICE_RESTART_MIN_INTERVAL_MS = 5000;
+// Per receiving peer — in a mesh the presenter uploads one copy to each.
+const SCREEN_MAX_BITRATE = 1_500_000;
+
+function isScreenShareSupported(): boolean {
+  if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return false;
+  // Phone and tablet browsers can't capture the screen.
+  return !/Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
+}
+
+// Screen tracks are sent on their own transceiver with no stream attached,
+// so the receiver can tell them from the camera.
+function isScreenTrackEvent(event: RTCTrackEvent): boolean {
+  return event.track.kind === 'video' && event.streams.length === 0;
+}
+
+async function setScreenTrack(transceiver: RTCRtpTransceiver, track: MediaStreamTrack | null) {
+  await transceiver.sender.replaceTrack(track);
+  if (!track) return;
+  const params = transceiver.sender.getParameters();
+  if (!params.encodings?.length) return;
+  params.encodings[0].maxBitrate = SCREEN_MAX_BITRATE;
+  await transceiver.sender.setParameters(params).catch(e => logger.warn('Could not cap screen share bitrate', e));
+}
 
 interface MeetingPeer {
   pc: RTCPeerConnection;
@@ -15,6 +38,9 @@ interface MeetingPeer {
   remoteDescriptionSet: boolean;
   pendingCandidates: RTCIceCandidateInit[];
   lastIceRestart: number;
+  // Extra video slot negotiated up front, so presenting is just a
+  // replaceTrack — no renegotiation. Found after the offer on the answering side.
+  screenTransceiver: RTCRtpTransceiver | null;
 }
 
 // Group meeting over a full mesh: one RTCPeerConnection per other
@@ -30,6 +56,11 @@ function useMeeting(
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   // Everyone the server says is in this room's meeting (including us once joined).
   const [meetingParticipants, setMeetingParticipants] = useState<string[]>([]);
+  const [screenShareSupported, setScreenShareSupported] = useState(false);
+  // Who the server says is presenting (one at a time), and their screens.
+  const [screenSharer, setScreenSharer] = useState<string | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Record<string, MediaStream>>({});
 
   const inMeetingRef = useRef(false);
   const joiningRef = useRef(false);
@@ -39,6 +70,12 @@ function useMeeting(
   const localStreamRef = useRef<MediaStream | null>(null);
   const rtcConfigRef = useRef<RTCConfiguration | null>(null);
   const peersRef = useRef<Map<string, MeetingPeer>>(new Map());
+  const screenTrackRef = useRef<MediaStreamTrack | null>(null);
+  const startingScreenShareRef = useRef(false);
+
+  useEffect(() => {
+    setScreenShareSupported(isScreenShareSupported());
+  }, []);
 
   const send = useCallback((message: OutboundWsMessage) => {
     socketRef.current?.send(JSON.stringify(message));
@@ -49,12 +86,20 @@ function useMeeting(
     if (!peer) return;
     peer.pc.close();
     peersRef.current.delete(peerId);
-    setRemoteStreams(prev => {
+    const without = (prev: Record<string, MediaStream>) => {
       if (!(peerId in prev)) return prev;
       const next = { ...prev };
       delete next[peerId];
       return next;
-    });
+    };
+    setRemoteStreams(without);
+    setRemoteScreenStreams(without);
+  }, []);
+
+  const releaseScreenTrack = useCallback(() => {
+    screenTrackRef.current?.stop();
+    screenTrackRef.current = null;
+    setLocalScreenStream(null);
   }, []);
 
   const cleanupLocal = useCallback(() => {
@@ -62,12 +107,14 @@ function useMeeting(
     peersRef.current.clear();
     localStreamRef.current?.getTracks().forEach(track => track.stop());
     localStreamRef.current = null;
+    releaseScreenTrack();
     inMeetingRef.current = false;
     joinConfirmedRef.current = false;
     setLocalStream(null);
     setRemoteStreams({});
+    setRemoteScreenStreams({});
     setInMeeting(false);
-  }, []);
+  }, [releaseScreenTrack]);
 
   const flushCandidates = useCallback((peer: MeetingPeer) => {
     peer.pendingCandidates.forEach(candidate => {
@@ -99,13 +146,25 @@ function useMeeting(
       remoteDescriptionSet: false,
       pendingCandidates: [],
       lastIceRestart: 0,
+      screenTransceiver: null,
     };
     peersRef.current.set(peerId, peer);
 
     const stream = localStreamRef.current;
     stream?.getTracks().forEach(track => pc.addTrack(track, stream));
+    // The offerer adds the screen slot; the answerer gets it from the offer.
+    if (isInitiator) {
+      peer.screenTransceiver = pc.addTransceiver(screenTrackRef.current ?? 'video', {
+        direction: 'sendrecv',
+        sendEncodings: [{ maxBitrate: SCREEN_MAX_BITRATE }],
+      });
+    }
 
     pc.ontrack = (event) => {
+      if (isScreenTrackEvent(event)) {
+        setRemoteScreenStreams(prev => ({ ...prev, [peerId]: new MediaStream([event.track]) }));
+        return;
+      }
       const [remoteStream] = event.streams;
       if (remoteStream) setRemoteStreams(prev => ({ ...prev, [peerId]: remoteStream }));
     };
@@ -183,6 +242,17 @@ function useMeeting(
       await peer.pc.setRemoteDescription(data.offer);
       peer.remoteDescriptionSet = true;
       flushCandidates(peer);
+      if (!peer.screenTransceiver) {
+        // The offer's extra video m-line: the one not carrying our camera.
+        const cameraTrack = localStreamRef.current?.getVideoTracks()[0] ?? null;
+        const screenTransceiver = peer.pc.getTransceivers().find(t =>
+          t.receiver.track.kind === 'video' && t.sender.track !== cameraTrack);
+        if (screenTransceiver) {
+          screenTransceiver.direction = 'sendrecv';
+          peer.screenTransceiver = screenTransceiver;
+          if (screenTrackRef.current) await setScreenTrack(screenTransceiver, screenTrackRef.current);
+        }
+      }
       const answer = await peer.pc.createAnswer();
       await peer.pc.setLocalDescription(answer);
       send({ type: 'meetingAnswer', answer: peer.pc.localDescription!, to: data.from });
@@ -235,6 +305,59 @@ function useMeeting(
     toast({ description: 'This meeting is full' });
   }, [cleanupLocal, toast]);
 
+  const stopScreenShare = useCallback(() => {
+    if (!screenTrackRef.current) return;
+    releaseScreenTrack();
+    peersRef.current.forEach(peer => {
+      if (peer.screenTransceiver) setScreenTrack(peer.screenTransceiver, null).catch(e => logger.error('Error clearing screen share track', e));
+    });
+    send({ type: 'screenShareStop' });
+  }, [releaseScreenTrack, send]);
+
+  const startScreenShare = useCallback(async () => {
+    if (!inMeetingRef.current || screenTrackRef.current || startingScreenShareRef.current) return;
+    startingScreenShareRef.current = true;
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15, max: 30 } },
+        audio: false,
+        // Sharing the meeting tab itself just shows an endless mirror.
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+      } as DisplayMediaStreamOptions);
+      const [track] = stream.getVideoTracks();
+      // Left the meeting while the picker was open.
+      if (!inMeetingRef.current) {
+        track.stop();
+        return;
+      }
+      // Favor sharp text over smooth motion.
+      track.contentHint = 'detail';
+      // The browser's own "Stop sharing" button.
+      track.addEventListener('ended', stopScreenShare);
+      screenTrackRef.current = track;
+      setLocalScreenStream(stream);
+      peersRef.current.forEach(peer => {
+        if (peer.screenTransceiver) setScreenTrack(peer.screenTransceiver, track).catch(e => logger.error('Error sending screen share track', e));
+      });
+      send({ type: 'screenShareStart' });
+    } catch (error) {
+      // NotAllowedError = the user closed the share picker.
+      if (!(error instanceof DOMException && error.name === 'NotAllowedError')) {
+        logger.error('Error starting screen share:', error);
+        toast({ description: 'Could not share your screen' });
+      }
+    } finally {
+      startingScreenShareRef.current = false;
+    }
+  }, [send, stopScreenShare, toast]);
+
+  const handleScreenShareState = useCallback((data: { sharer: string | null }) => {
+    setScreenSharer(data.sharer);
+    // Someone else started presenting — they take over from us.
+    if (screenTrackRef.current && data.sharer !== currentUserRef.current?.id) stopScreenShare();
+  }, [currentUserRef, stopScreenShare]);
+
   return {
     inMeeting,
     inMeetingRef,
@@ -249,6 +372,13 @@ function useMeeting(
     handleMeetingIce,
     handleMeetingState,
     handleMeetingFull,
+    screenShareSupported,
+    screenSharer,
+    localScreenStream,
+    remoteScreenStreams,
+    startScreenShare,
+    stopScreenShare,
+    handleScreenShareState,
   };
 }
 

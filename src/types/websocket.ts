@@ -32,6 +32,8 @@ export type InboundWsMessage =
   | { type: 'meetingOffer';    offer: RTCSessionDescriptionInit; fresh?: boolean; from: string }
   | { type: 'meetingAnswer';   answer: RTCSessionDescriptionInit; from: string }
   | { type: 'meetingIce';      candidate: RTCIceCandidateInit; from: string }
+  | { type: 'recordingState';  recorders: string[] }
+  | { type: 'screenShareState'; sharer: string | null }
   | { type: 'error';           content: string };
 
 export type OutboundWsMessage =
@@ -52,4 +54,8 @@ export type OutboundWsMessage =
   | { type: 'meetingLeave' }
   | { type: 'meetingOffer';    offer: RTCSessionDescriptionInit; fresh?: boolean; to: string }
   | { type: 'meetingAnswer';   answer: RTCSessionDescriptionInit; to: string }
-  | { type: 'meetingIce';      candidate: RTCIceCandidateInit; to: string };
+  | { type: 'meetingIce';      candidate: RTCIceCandidateInit; to: string }
+  | { type: 'recordingStart' }
+  | { type: 'recordingStop' }
+  | { type: 'screenShareStart' }
+  | { type: 'screenShareStop' };
